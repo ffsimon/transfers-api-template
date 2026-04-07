@@ -63,6 +63,7 @@ func TestTransfersService_GetByID(t *testing.T) {
 
 func TestTransfersService_Delete(t *testing.T) {
 	// given
+	//
 	var (
 		ctx                = context.Background()
 		cfg                = config.BusinessConfig{TransferMinAmount: 1}
