@@ -2,14 +2,18 @@ package config
 
 import (
 	"encoding/json"
-	"github.com/caarlos0/env/v10"
 	"time"
 	"transfers-api/internal/logging"
+
+	"github.com/caarlos0/env/v10"
 )
 
 type Config struct {
-	Business      BusinessConfig `json:"business"`
-	MongoDBConfig MongoDB        `json:"mongodb"`
+	Business       BusinessConfig `json:"business"`
+	MongoDBConfig  MongoDB        `json:"mongodb"`
+	MySQLConfig    MySQL          `json:"mysql"`
+	CCacheConfig   CCache         `json:"ccache"`
+	RabbitMQConfig RabbitMQ       `json:"rabbitmq"`
 }
 
 type BusinessConfig struct {
@@ -26,11 +30,42 @@ type MongoDB struct {
 	Collection     string        `env:"MONGODB_COLLECTION" envDefault:"transfers" json:"collection"`
 }
 
+type MySQL struct {
+	ConnectTimeout time.Duration `env:"MYSQL_CONNECT_TIMEOUT" envDefault:"10s" json:"connect_timeout"`
+	Hostname       string        `env:"MYSQL_HOSTNAME" envDefault:"localhost" json:"hostname"`
+	Port           int           `env:"MYSQL_PORT" envDefault:"3306" json:"port"`
+	Username       string        `env:"MYSQL_USER" envDefault:"root" json:"username"`
+	Password       string        `env:"MYSQL_PASSWORD" envDefault:"root" json:"password"`
+	Database       string        `env:"MYSQL_DATABASE" envDefault:"transfers" json:"database"`
+
+	MaxOpenConns    int           `env:"MYSQL_MAX_OPEN_CONNS" envDefault:"25" json:"max_open_conns"`
+	MaxIdleConns    int           `env:"MYSQL_MAX_IDLE_CONNS" envDefault:"25" json:"max_idle_conns"`
+	ConnMaxLifetime time.Duration `env:"MYSQL_CONN_MAX_LIFETIME" envDefault:"5m" json:"conn_max_lifetime"`
+}
+
+type CCache struct {
+	TTLSeconds     int   `env:"CCACHE_TTL_SECONDS" envDefault:"30" json:"ttl_seconds"`
+	MaxSize        int64 `env:"CCACHE_MAX_SIZE" envDefault:"5000" json:"max_size"`
+	GetsPerPromote int32 `env:"CCACHE_GETS_PER_PROMOTE" envDefault:"3" json:"gets_per_promote"`
+	PercentToPrune uint8 `env:"CCACHE_PERCENT_TO_PRUNE" envDefault:"10" json:"percent_to_prune"`
+}
+
+type RabbitMQ struct {
+	Hostname  string `env:"RABBITMQ_HOSTNAME" envDefault:"rabbitmq" json:"hostname"`
+	Port      int    `env:"RABBITMQ_PORT" envDefault:"5672" json:"port"`
+	Username  string `env:"RABBITMQ_USERNAME" envDefault:"guest" json:"username"`
+	Password  string `env:"RABBITMQ_PASSWORD" envDefault:"guest" json:"password"`
+	QueueName string `env:"RABBITMQ_QUEUE_NAME" envDefault:"transfers-events" json:"queue_name"`
+}
+
 func ParseFromEnv() *Config {
 	var cfg Config
 	for _, nested := range []interface{}{
 		&cfg.Business,
 		&cfg.MongoDBConfig,
+		&cfg.MySQLConfig,
+		&cfg.CCacheConfig,
+		&cfg.RabbitMQConfig,
 	} {
 		if err := env.Parse(nested); err != nil {
 			logging.Logger.Fatalf("error parsing config: %v", err)

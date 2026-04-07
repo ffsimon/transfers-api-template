@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"transfers-api/internal/clients"
 	"transfers-api/internal/config"
 	"transfers-api/internal/handlers"
 	"transfers-api/internal/logging"
@@ -21,10 +23,22 @@ func main() {
 
 	// init repositories
 	transfersDB := repositories.NewTransfersMongoDBRepository(cfg.MongoDBConfig)
+	// transfersDB := repositories.NewTransfersMySQLRepository(cfg.MySQLConfig)
+	transfersCCache := repositories.NewTransfersCCacheRepository(cfg.CCacheConfig)
+
 	logger.Info("repositories created")
 
+	// init clients
+	tranfersDBPublisher := clients.NewRabbitMQClient(cfg.RabbitMQConfig)
+	defer func() {
+		if err := tranfersDBPublisher.Close(); err != nil {
+			logger.Warnf("error closing RabbitMQ client: %v", err)
+		}
+	}()
+	logger.Info("clients created")
+
 	// init services
-	transfersService := services.NewTransfersService(cfg.Business, transfersDB)
+	transfersService := services.NewTransfersService(cfg.Business, transfersDB, transfersCCache, tranfersDBPublisher)
 	logger.Infof("services created")
 
 	// init handlers
@@ -36,6 +50,10 @@ func main() {
 	server.MapRoutes()
 	logger.Infof("server created, running %s@%s", version.AppName, version.Version)
 
+	port := os.Getenv("App_PORT")
+	if port == "" {
+		port = "8080"
+	}
 	// run server
-	server.Run(":8080")
+	server.Run(":" + port)
 }

@@ -7,6 +7,7 @@ import (
 	"transfers-api/internal/config"
 	"transfers-api/internal/enums"
 	"transfers-api/internal/known_errors"
+	"transfers-api/internal/logging"
 	"transfers-api/internal/models"
 )
 
@@ -15,19 +16,33 @@ import (
 type TransfersRepository interface {
 	Create(ctx context.Context, transfer models.Transfer) (string, error)
 	GetByID(ctx context.Context, id string) (models.Transfer, error)
+	GetTransfersByUserID(ctx context.Context, userID string) ([]models.Transfer, error)
 	Update(ctx context.Context, transfer models.Transfer) error
 	Delete(ctx context.Context, id string) error
 }
 
-type TransfersService struct {
-	businessCfg   config.BusinessConfig
-	transfersRepo TransfersRepository
+type TransfersPublisher interface {
+	Publish(operation string, transferID string) error
 }
 
-func NewTransfersService(businessCfg config.BusinessConfig, transfersRepo TransfersRepository) *TransfersService {
+type TransfersService struct {
+	businessCfg        config.BusinessConfig
+	transfersRepo      TransfersRepository
+	transfersCCache    TransfersRepository
+	transfersPublisher TransfersPublisher
+}
+
+func NewTransfersService(
+	businessCfg config.BusinessConfig,
+	transfersRepo TransfersRepository,
+	transfersCCache TransfersRepository,
+	transfersPublisher TransfersPublisher,
+) *TransfersService {
 	return &TransfersService{
-		businessCfg:   businessCfg,
-		transfersRepo: transfersRepo,
+		businessCfg:        businessCfg,
+		transfersRepo:      transfersRepo,
+		transfersCCache:    transfersCCache,
+		transfersPublisher: transfersPublisher,
 	}
 }
 
@@ -36,7 +51,7 @@ func (s *TransfersService) Create(ctx context.Context, transfer models.Transfer)
 		return "", fmt.Errorf("sender_id is required: %w", known_errors.ErrBadRequest)
 	}
 	if strings.TrimSpace(transfer.ReceiverID) == "" {
-		return "", fmt.Errorf("sender_id is required: %w", known_errors.ErrBadRequest)
+		return "", fmt.Errorf("receiver_id is required: %w", known_errors.ErrBadRequest)
 	}
 	if transfer.Currency == enums.CurrencyUnknown {
 		return "", fmt.Errorf("invalid currency %s: %w", transfer.Currency.String(), known_errors.ErrBadRequest)
@@ -51,14 +66,69 @@ func (s *TransfersService) Create(ctx context.Context, transfer models.Transfer)
 	if err != nil {
 		return "", fmt.Errorf("error creating transfer in repository: %w", err)
 	}
+	logging.Logger.Infof("Transfer created in DB with ID: %s", id)
+
+	// publish event
+	go func() {
+		if err := s.transfersPublisher.Publish("create", transfer.ID); err != nil {
+			logging.Logger.Warnf("error publishing transfer create event: %w", err)
+		}
+	}()
+
+	// also create in cache
+	transfer.ID = id
+	if _, err := s.transfersCCache.Create(ctx, transfer); err != nil {
+		logging.Logger.Warnf("error creating transfer in ccache: %w", err)
+	}
+	logging.Logger.Infof("Transfer created in ccache with ID: %s", id)
 	return id, nil
 }
 
 func (s *TransfersService) GetByID(ctx context.Context, id string) (models.Transfer, error) {
-	transfer, err := s.transfersRepo.GetByID(ctx, id)
+	// first try to get from cache
+	transfer, err := s.transfersCCache.GetByID(ctx, id)
+	if err == nil {
+		logging.Logger.Infof("Transfer retrieved from ccache with ID: %s", id)
+		return transfer, nil
+	}
+
+	// if not found in cache, get from repository
+	transfer, err = s.transfersRepo.GetByID(ctx, id)
 	if err != nil {
 		return models.Transfer{}, fmt.Errorf("error getting transfer %s from repository: %w", id, err)
 	}
+	logging.Logger.Infof("Transfer retrieved from DB with ID: %s", id)
+
+	// also create in cache
+	if _, err := s.transfersCCache.Create(ctx, transfer); err != nil {
+		logging.Logger.Warnf("error creating transfer in ccache: %w", err)
+	}
+	logging.Logger.Infof("Transfer created in ccache with ID: %s", id)
+	return transfer, nil
+}
+
+func (s *TransfersService) GetTransfersByUserID(ctx context.Context, userID string) ([]models.Transfer, error) {
+	// first try to get from cache
+	transfer, err := s.transfersCCache.GetTransfersByUserID(ctx, userID)
+	if err == nil {
+		logging.Logger.Infof("Transfer retrieved from ccache with ID: %s", userID)
+		return transfer, nil
+	}
+
+	// if not found in cache, get from repository
+	transfer, err = s.transfersRepo.GetTransfersByUserID(ctx, userID)
+	if err != nil {
+		return []models.Transfer{}, fmt.Errorf("error getting transfer for user %s from repository: %w", userID, err)
+	}
+	logging.Logger.Infof("Transfer retrieved from DB with ID: %s", userID)
+
+	// also create in cache
+	for _, t := range transfer {
+		if _, err := s.transfersCCache.Create(ctx, t); err != nil {
+			logging.Logger.Warnf("error creating transfer in ccache: %w", err)
+		}
+	}
+	logging.Logger.Infof("Transfer created in ccache with ID: %s", userID)
 	return transfer, nil
 }
 
@@ -76,12 +146,36 @@ func (s *TransfersService) Update(ctx context.Context, transfer models.Transfer)
 	if err := s.transfersRepo.Update(ctx, transfer); err != nil {
 		return fmt.Errorf("error updating transfer %s in repository: %w", transfer.ID, err)
 	}
+
+	// publish event
+	go func() {
+		if err := s.transfersPublisher.Publish("update", transfer.ID); err != nil {
+			logging.Logger.Warnf("error publishing transfer update event: %w", err)
+		}
+	}()
+
+	// also update in cache
+	if err := s.transfersCCache.Update(ctx, transfer); err != nil {
+		logging.Logger.Warnf("error updating transfer in ccache: %w", err)
+	}
 	return nil
 }
 
 func (s *TransfersService) Delete(ctx context.Context, id string) error {
 	if err := s.transfersRepo.Delete(ctx, id); err != nil {
 		return fmt.Errorf("error deleting transfer %s from repository: %w", id, err)
+	}
+
+	// publish event
+	go func() {
+		if err := s.transfersPublisher.Publish("delete", id); err != nil {
+			logging.Logger.Warnf("error publishing transfer delete event: %w", err)
+		}
+	}()
+
+	// also delete from cache
+	if err := s.transfersCCache.Delete(ctx, id); err != nil {
+		logging.Logger.Warnf("error deleting transfer from ccache: %w", err)
 	}
 	return nil
 }

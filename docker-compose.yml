@@ -12,17 +12,42 @@ services:
     volumes:
       - mongo_data:/data/db
 
+  mysql:
+    image: mysql:8.0
+    container_name: transfers-mysql
+    restart: always
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: transfers
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: transfers-rabbitmq
+    restart: always
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+
   app:
     image: transfers-api:0.1.0
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.debug
     container_name: transfers-api
     depends_on:
       - mongodb
+      - mysql
+      - rabbitmq
     ports:
       - "8080:8080"
-
+      - "40000:40000"
     environment:
       # ---- Business ----
       TRANSFER_MIN_AMOUNT: 1
@@ -36,7 +61,20 @@ services:
       MONGODB_DATABASE: transfers-db
       MONGODB_COLLECTION: transfers
 
+      # ---- MySQL ----
+      MYSQL_CONNECT_TIMEOUT: 10s
+      MYSQL_HOSTNAME: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: root
+      MYSQL_DATABASE: transfers
+
+      MYSQL_MAX_OPEN_CONNS: 25
+      MYSQL_MAX_IDLE_CONNS: 25
+      MYSQL_CONN_MAX_LIFETIME: 5m
+
     restart: always
 
 volumes:
   mongo_data:
+  mysql_data:
